@@ -13,7 +13,7 @@ from marker.output import text_from_rendered
 from PIL import Image
 from transformers import AutoModel, AutoProcessor
 
-from pptagent.llms import LLM, AsyncLLM
+from pptagent.llms import LLM, AsyncLLM, AzureLLM, AsyncAzureLLM, AzureAIProjectLLM
 from pptagent.presentation import Presentation, SlidePage
 from pptagent.utils import get_logger, is_image_path, pjoin
 
@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 
 class ModelManager:
     """
-    A class to manage models.
+    A class to manage models with support for Azure AI.
     """
 
     def __init__(
@@ -31,6 +31,10 @@ class ModelManager:
         language_model_name: Optional[str] = None,
         vision_model_name: Optional[str] = None,
         text_model_name: Optional[str] = None,
+        use_azure: bool = False,
+        azure_endpoint: Optional[str] = None,
+        azure_project_endpoint: Optional[str] = None,
+        azure_api_version: str = "2024-12-01-preview",
     ):
         """Initialize models from environment variables after instance creation"""
         if api_base is None:
@@ -41,13 +45,63 @@ class ModelManager:
             vision_model_name = os.environ.get("VISION_MODEL", "gpt-4.1")
         if text_model_name is None:
             text_model_name = os.environ.get("TEXT_MODEL", "text-embedding-3-small")
+        
+        # Check if Azure should be used
+        use_azure = use_azure or os.environ.get("USE_AZURE", "false").lower() == "true"
+        
         self._image_model = None
         self._marker_model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.language_model = AsyncLLM(language_model_name, api_base)
-        self.vision_model = AsyncLLM(vision_model_name, api_base)
-        self.text_model = AsyncLLM(text_model_name, api_base)
+        if use_azure:
+            # Check which Azure method to use
+            if azure_project_endpoint or os.environ.get("AZURE_PROJECT_ENDPOINT"):
+                logger.info(
+                    "Using Azure AI Project for models. "
+                    "Ensure you have the correct project endpoint set."
+                )
+                if azure_project_endpoint is None:
+                    azure_project_endpoint = os.environ.get("AZURE_PROJECT_ENDPOINT")
+
+                # Use Azure AI Project client
+                self.language_model = AzureAIProjectLLM(
+                    model=language_model_name,
+                    project_endpoint=azure_project_endpoint
+                )
+                self.vision_model = AzureAIProjectLLM(
+                    model=vision_model_name,
+                    project_endpoint=azure_project_endpoint
+                )
+                self.text_model = AzureAIProjectLLM(
+                    model=text_model_name,
+                    project_endpoint=azure_project_endpoint
+                )
+            else:
+                # Use Azure OpenAI directly
+                logger.info(
+                    "Using Azure OpenAI for models. "
+                    "Ensure you have the correct endpoint and API key set."
+                )
+                self.language_model = AsyncAzureLLM(
+                    model=language_model_name,
+                    azure_endpoint=azure_endpoint,
+                    api_version=azure_api_version
+                )
+                self.vision_model = AsyncAzureLLM(
+                    model=vision_model_name,
+                    azure_endpoint=azure_endpoint,
+                    api_version=azure_api_version
+                )
+                self.text_model = AsyncAzureLLM(
+                    model=text_model_name,
+                    azure_endpoint=azure_endpoint,
+                    api_version=azure_api_version
+                )
+        else:
+            # Use regular OpenAI-compatible models
+            self.language_model = AsyncLLM(language_model_name, api_base)
+            self.vision_model = AsyncLLM(vision_model_name, api_base)
+            self.text_model = AsyncLLM(text_model_name, api_base)
 
     @property
     def image_model(self):

@@ -27,6 +27,9 @@ keywords = [
     "document-processing",
 ]
 dependencies = [
+    "azure-ai-projects",
+    "azure-identity", 
+    "azure-ai-inference",
     "beautifulsoup4",
     "fastapi",
     "einops",

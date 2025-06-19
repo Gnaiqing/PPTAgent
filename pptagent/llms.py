@@ -1,13 +1,24 @@
+import asyncio
 import base64
+import os
 import re
 import threading
+import torch
 from dataclasses import dataclass
 from typing import Optional, Union
 
-import torch
 from oaib import Auto
 from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
+
+# Add Azure AI support
+try:
+    from openai import AzureOpenAI, AsyncAzureOpenAI
+    from azure.ai.projects import AIProjectClient
+    from azure.identity import DefaultAzureCredential
+    AZURE_AVAILABLE = True
+except ImportError:
+    AZURE_AVAILABLE = False
 
 from pptagent.utils import get_json_from_response, get_logger, tenacity_decorator
 
@@ -416,3 +427,268 @@ def get_model_abbr(llms: Union[LLM, list[LLM]]) -> str:
     except Exception:
         # Fallback: return full model names if pattern matching fails
         return "+".join(llm.model for llm in llms)
+
+
+@dataclass
+class AzureLLM(LLM):
+    """
+    Azure AI wrapper class for language model interaction using Azure OpenAI.
+    """
+
+    azure_endpoint: Optional[str] = None
+    api_version: str = "2024-12-01-preview"
+    deployment_name: Optional[str] = None
+    subscription_key: Optional[str] = None
+
+    def __post_init__(self):
+        if not AZURE_AVAILABLE:
+            raise ImportError(
+                "Azure AI packages not installed. Please install azure-ai-projects, azure-identity, and azure-ai-inference"
+            )
+
+        # Use environment variables if not provided
+        if self.azure_endpoint is None:
+            self.azure_endpoint = os.environ.get("AZURE_ENDPOINT")
+        if self.subscription_key is None:
+            self.subscription_key = os.environ.get("AZURE_INFERENCE_CREDENTIAL")
+        if self.deployment_name is None:
+            self.deployment_name = self.model
+
+        if not self.azure_endpoint:
+            raise ValueError(
+                "Azure endpoint must be provided either as parameter or AZURE_ENDPOINT environment variable"
+            )
+        if not self.subscription_key:
+            raise ValueError(
+                "Azure subscription key must be provided either as parameter or AZURE_INFERENCE_CREDENTIAL environment variable"
+            )
+
+        self.client = AzureOpenAI(
+            api_version=self.api_version,
+            azure_endpoint=self.azure_endpoint,
+            api_key=self.subscription_key,
+            timeout=self.timeout,
+        )
+
+    def test_connection(self) -> bool:
+        """
+        Test the connection to the Azure LLM.
+
+        Returns:
+            bool: True if connection is successful, False otherwise.
+        """
+        try:
+            self.client.models.list()
+            return True
+        except Exception as e:
+            logger.warning(
+                "Azure connection test failed: %s\nModel: %s, Endpoint: %s",
+                e,
+                self.deployment_name,
+                self.azure_endpoint,
+            )
+            return False
+
+
+@dataclass
+class AsyncAzureLLM(AzureLLM):
+    """
+    Asynchronous Azure AI wrapper class for language model interaction.
+    """
+
+    use_batch: bool = False
+
+    def __post_init__(self):
+        if not AZURE_AVAILABLE:
+            raise ImportError(
+                "Azure AI packages not installed. Please install azure-ai-projects, azure-identity, and azure-ai-inference"
+            )
+
+        # Use environment variables if not provided
+        if self.azure_endpoint is None:
+            self.azure_endpoint = os.environ.get("AZURE_ENDPOINT")
+        if self.subscription_key is None:
+            self.subscription_key = os.environ.get("AZURE_INFERENCE_CREDENTIAL")
+        if self.deployment_name is None:
+            self.deployment_name = self.model
+
+        if not self.azure_endpoint:
+            raise ValueError(
+                "Azure endpoint must be provided either as parameter or AZURE_ENDPOINT environment variable"
+            )
+        if not self.subscription_key:
+            raise ValueError(
+                "Azure subscription key must be provided either as parameter or AZURE_INFERENCE_CREDENTIAL environment variable"
+            )
+
+        # For async operations, we use AsyncAzureOpenAI client
+        self.client = AsyncAzureOpenAI(
+            api_version=self.api_version,
+            azure_endpoint=self.azure_endpoint,
+            api_key=self.subscription_key,
+            timeout=self.timeout,
+        )
+
+    @tenacity_decorator
+    async def __call__(
+        self,
+        content: str,
+        images: Optional[Union[str, list[str]]] = None,
+        system_message: Optional[str] = None,
+        history: Optional[list] = None,
+        return_json: bool = False,
+        return_message: bool = False,
+        **client_kwargs,
+    ) -> Union[str, dict, tuple]:
+        """
+        Asynchronously call the Azure language model with a prompt and optional images.
+        """
+        if history is None:
+            history = []
+        system, message = self.format_message(content, images, system_message)
+        try:
+            completion = await self.client.chat.completions.create(
+                model=self.deployment_name,
+                messages=system + history + message,
+                **client_kwargs
+            )
+        except Exception as e:
+            logger.warning("Error in AsyncAzureLLM call: %s", e)
+            raise e
+        response = completion.choices[0].message.content
+        message.append({"role": "assistant", "content": response})
+        return self.__post_process__(response, message, return_json, return_message)
+
+    async def test_connection(self) -> bool:
+        """
+        Test the connection to the Azure LLM asynchronously.
+        """
+        try:
+            # AsyncAzureOpenAI client uses async methods
+            await self.client.models.list()
+            return True
+        except Exception as e:
+            logger.warning(
+                "Azure async connection test failed: %s\nModel: %s, Endpoint: %s",
+                e,
+                self.deployment_name,
+                self.azure_endpoint,
+            )
+            return False
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["client"] = None
+        return state
+
+    def __setstate__(self, state: dict):
+        self.__dict__.update(state)
+        self.client = AsyncAzureOpenAI(
+            api_version=self.api_version,
+            azure_endpoint=self.azure_endpoint,
+            api_key=self.subscription_key,
+            timeout=self.timeout,
+        )
+
+
+@dataclass
+class AzureAIProjectLLM(AsyncLLM):
+    """
+    Azure AI Project client wrapper for language model interaction.
+    """
+
+    project_endpoint: Optional[str] = None
+
+    def __post_init__(self):
+        if not AZURE_AVAILABLE:
+            raise ImportError("Azure AI packages not installed. Please install azure-ai-projects and azure-identity")
+
+        if self.project_endpoint is None:
+            self.project_endpoint = os.environ.get("AZURE_PROJECT_ENDPOINT")
+
+        if not self.project_endpoint:
+            raise ValueError("Azure project endpoint must be provided either as parameter or AZURE_PROJECT_ENDPOINT environment variable")
+
+        # Initialize Azure AI Project Client
+        self.project_client = AIProjectClient(
+            endpoint=self.project_endpoint,
+            credential=DefaultAzureCredential(),
+        )
+
+        # Get the Azure OpenAI client from the project
+        self.client = self.project_client.inference.get_azure_openai_client(
+            api_version="2024-10-21"
+        )
+
+    async def test_connection(self) -> bool:
+        """
+        Test the connection to the Azure AI Project.
+        """
+        try:
+            # Azure OpenAI client from AI Project uses synchronous methods
+            # Run in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.client.models.list)
+            return True
+        except Exception as e:
+            logger.warning(
+                "Azure AI Project connection test failed: %s\nModel: %s, Endpoint: %s",
+                e,
+                self.model,
+                self.project_endpoint,
+            )
+            return False
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["client"] = None
+        state["project_client"] = None
+        return state
+
+    def __setstate__(self, state: dict):
+        self.__dict__.update(state)
+        # Initialize Azure AI Project Client
+        self.project_client = AIProjectClient(
+            endpoint=self.project_endpoint,
+            credential=DefaultAzureCredential(),
+        )
+
+        # Get the Azure OpenAI client from the project
+        self.client = self.project_client.inference.get_azure_openai_client(
+            api_version="2024-10-21"
+        )
+
+    @tenacity_decorator
+    async def __call__(
+        self,
+        content: str,
+        images: Optional[Union[str, list[str]]] = None,
+        system_message: Optional[str] = None,
+        history: Optional[list] = None,
+        return_json: bool = False,
+        return_message: bool = False,
+        **client_kwargs,
+    ) -> Union[str, dict, tuple]:
+        """
+        Asynchronously call the Azure AI Project language model with a prompt and optional images.
+        """
+        if history is None:
+            history = []
+        system, message = self.format_message(content, images, system_message)
+        try:
+            # Run synchronous Azure OpenAI call in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            completion = await loop.run_in_executor(
+                None,
+                lambda: self.client.chat.completions.create(
+                    model=self.model,
+                    messages=system + history + message,
+                    **client_kwargs
+                )
+            )
+        except Exception as e:
+            logger.warning("Error in AzureAIProjectLLM call: %s", e)
+            raise e
+        response = completion.choices[0].message.content
+        message.append({"role": "assistant", "content": response})
+        return self.__post_process__(response, message, return_json, return_message)

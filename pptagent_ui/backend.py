@@ -44,7 +44,12 @@ STAGES = [
 ]
 
 
-models = ModelManager()
+models = ModelManager(
+    use_azure=os.environ.get("USE_AZURE", "false").lower() == "true",
+    azure_project_endpoint=os.environ.get("AZURE_PROJECT_ENDPOINT"),
+    azure_endpoint=os.environ.get("AZURE_ENDPOINT"),
+    azure_api_version=os.environ.get("AZURE_API_VERSION", "2024-12-01-preview"),
+)
 
 
 @asynccontextmanager
