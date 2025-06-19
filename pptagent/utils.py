@@ -285,11 +285,41 @@ def markdown_table_to_image(markdown_text: str, output_path: str):
     assert "table" in html, "Failed to find table in markdown"
 
     parent_dir, basename = os.path.split(output_path)
-    hti = Html2Image(
-        disable_logging=True,
-        output_path=parent_dir,
-        custom_flags=["--no-sandbox", "--headless"],
-    )
+    
+    # Try to find Chrome/Chromium executable
+    chrome_executable = None
+    possible_executables = [
+        "google-chrome",
+        "google-chrome-stable", 
+        "chromium-browser",
+        "chromium",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/snap/bin/chromium",
+    ]
+    
+    for executable in possible_executables:
+        if which(executable):
+            chrome_executable = executable
+            break
+    
+    if chrome_executable:
+        hti = Html2Image(
+            disable_logging=True,
+            output_path=parent_dir,
+            custom_flags=["--no-sandbox", "--headless", "--disable-gpu", "--disable-dev-shm-usage"],
+            browser_executable=chrome_executable,
+        )
+    else:
+        # Fallback without specifying executable (will try auto-detection)
+        hti = Html2Image(
+            disable_logging=True,
+            output_path=parent_dir,
+            custom_flags=["--no-sandbox", "--headless", "--disable-gpu", "--disable-dev-shm-usage"],
+        )
+    
     hti.browser.use_new_headless = None
     hti.screenshot(html_str=html, css_str=TABLE_CSS, save_as=basename)
 

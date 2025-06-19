@@ -5,7 +5,7 @@ import re
 import threading
 import torch
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional, Union, TYPE_CHECKING
 
 from oaib import Auto
 from openai import AsyncOpenAI, OpenAI
@@ -489,13 +489,37 @@ class AzureLLM(LLM):
             )
             return False
 
+    def to_async(self) -> "AsyncAzureLLM":
+        """
+        Convert the Azure LLM to an asynchronous Azure LLM.
+        """
+        return AsyncAzureLLM(
+            model=self.model,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout=self.timeout,
+            azure_endpoint=self.azure_endpoint,
+            api_version=self.api_version,
+            deployment_name=self.deployment_name,
+            subscription_key=self.subscription_key,
+        )
+    
+    def to_sync(self) -> "AzureLLM":
+        """
+        Return self since AzureLLM is already synchronous.
+        """
+        return self
+
 
 @dataclass
-class AsyncAzureLLM(AzureLLM):
+class AsyncAzureLLM(AsyncLLM):
     """
     Asynchronous Azure AI wrapper class for language model interaction.
     """
-
+    azure_endpoint: Optional[str] = None
+    api_version: str = "2024-12-01-preview"
+    deployment_name: Optional[str] = None
+    subscription_key: Optional[str] = None
     use_batch: bool = False
 
     def __post_init__(self):
@@ -542,6 +566,18 @@ class AsyncAzureLLM(AzureLLM):
     ) -> Union[str, dict, tuple]:
         """
         Asynchronously call the Azure language model with a prompt and optional images.
+
+        Args:
+            content (str): The prompt content.
+            images (str or list[str]): An image file path or list of image file paths.
+            system_message (str): The system message.
+            history (list): The conversation history.
+            return_json (bool): Whether to return the response as JSON.
+            return_message (bool): Whether to return the message.
+            **client_kwargs: Additional keyword arguments to pass to the client.
+
+        Returns:
+            Union[str, Dict, List, Tuple]: The response from the model.
         """
         if history is None:
             history = []
@@ -589,6 +625,27 @@ class AsyncAzureLLM(AzureLLM):
             api_key=self.subscription_key,
             timeout=self.timeout,
         )
+
+    def to_sync(self) -> "AzureLLM":
+        """
+        Convert the AsyncAzureLLM to a synchronous AzureLLM.
+        """
+        return AzureLLM(
+            model=self.model,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout=self.timeout,
+            azure_endpoint=self.azure_endpoint,
+            api_version=self.api_version,
+            deployment_name=self.deployment_name,
+            subscription_key=self.subscription_key,
+        )
+    
+    def to_async(self) -> "AsyncAzureLLM":
+        """
+        Return self since AsyncAzureLLM is already async.
+        """
+        return self
 
 
 @dataclass
@@ -692,3 +749,25 @@ class AzureAIProjectLLM(AsyncLLM):
         response = completion.choices[0].message.content
         message.append({"role": "assistant", "content": response})
         return self.__post_process__(response, message, return_json, return_message)
+
+    def to_sync(self) -> "AzureLLM":
+        """
+        Convert the AzureAIProjectLLM to a synchronous AzureLLM.
+        Note: This loses the AI Project client functionality and falls back to direct Azure OpenAI.
+        """
+        return AzureLLM(
+            model=self.model,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout=self.timeout,
+            azure_endpoint=self.project_endpoint.replace('/api/projects/', '/'),  # Convert project endpoint to Azure endpoint
+            api_version="2024-12-01-preview",
+            deployment_name=self.model,
+            subscription_key=None,  # Will need to be set from environment
+        )
+
+    def to_async(self) -> "AzureAIProjectLLM":
+        """
+        Return self since AzureAIProjectLLM is already async.
+        """
+        return self
